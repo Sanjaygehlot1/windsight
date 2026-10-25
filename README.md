@@ -71,8 +71,8 @@ Make sure Docker is installed and running.
 Clone the repository:
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd <YOUR_REPOSITORY_FOLDER>
+git clone https://github.com/Sanjaygehlot1/windsight
+cd windsight
 ```
 
 Start the application:
@@ -115,9 +115,9 @@ The default 12:00 UK decision cutoff is a configurable assumption for this pilot
 
 ## Project Links
 
-- **Live Application:** To be added after deployment
-- **GitHub Repository:** To be added
-- **Demo Video:** To be added (Unlisted YouTube)
+- **Live Application:** [Live Link](https://windsight-blond.vercel.app/)
+- **GitHub Repository:** [Github Repo](https://github.com/Sanjaygehlot1/windsight)
+- **Demo Video:** [Unlisted YouTube Video](https://youtu.be/WaWwya93qLQ)
 
 ## AI Assistance
 
