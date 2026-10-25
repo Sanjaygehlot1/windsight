@@ -1,96 +1,130 @@
-# WindSight — UK day-ahead wind intelligence
+# WindSight
 
-**Pilot period:** 1–31 January 2026 (delivery dates). React, FastAPI, Docker.
+**Wind Generation Forecast & Accuracy Analysis for UK Day-Ahead Electricity Procurement**
 
-## Problem / value proposition
-UK power procurement teams must make day-ahead decisions before wind generation is known. WindSight shows the latest *available at decision-time* wind forecast alongside eventual FUELHH wind outturn and quantified historical forecast error. It does not claim to calculate net procurement volume: demand, supply contracts and prices are explicitly out of scope.
+WindSight is a web application developed for a UK electricity utility's procurement team. It helps users understand the wind generation forecasts available when making day-ahead electricity purchasing decisions and evaluate their accuracy against actual generation.
 
-## Start locally
+The application analyzes national-level wind generation data for purchasing decisions made between **1–31 January 2026**, using Elexon's FUELHH and WINDFOR datasets.
 
-Prerequisites: Docker + Compose; working outbound internet access to `https://data.elexon.co.uk`.
+## Features
+
+**1. Wind Generation Forecasts**
+- View forecasts available before a selected purchasing decision cutoff.
+- Select a decision date and view the following day's forecast.
+- Compare forecasted and actual wind generation through interactive charts.
+- Examine half-hourly observations and forecast publication times.
+- Export daily analysis as CSV.
+
+**2. Forecast Accuracy Analysis**
+- Evaluate forecast performance using MAE, RMSE, bias, and P90 absolute error.
+- Analyze daily and monthly forecasting errors.
+- Identify overestimation and underestimation of wind generation.
+- View matched data coverage and daily accuracy breakdowns.
+- Export monthly analysis as CSV.
+
+**3. Data Reliability**
+- Uses actual Elexon wind generation records.
+- Selects only forecasts published before or at the decision cutoff.
+- Preserves missing observations rather than estimating values.
+- Uses a saved historical dataset for reproducible results.
+
+## Tech Stack
+
+| Technology | Purpose |
+|---|---|
+| React + Vite | Frontend |
+| Python + FastAPI | Backend and data analysis |
+| Recharts | Data visualization |
+| Elexon API | Wind generation data |
+| Docker | Application deployment |
+| Pytest | Backend testing |
+
+## Project Structure
+
+```text
+windsight/
+├── backend/
+│   ├── app/
+│   │   ├── main.py          # API endpoints and data loading
+│   │   ├── elexon.py        # Elexon API integration
+│   │   └── analytics.py     # Forecast selection and accuracy calculations
+│   ├── data/                # Historical Elexon data snapshot
+│   ├── scripts/             # Data retrieval utilities
+│   ├── tests/               # Backend tests
+│   └── requirements.txt     # Python dependencies
+├── frontend/
+│   ├── src/
+│   │   ├── main.jsx         # React application
+│   │   └── style.css        # Application styling
+│   └── package.json         # Frontend dependencies
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
+```
+
+## How to Run
+
+### Using Docker (Recommended)
+
+Make sure Docker is installed and running.
+
+Clone the repository:
+
+```bash
+git clone <YOUR_REPOSITORY_URL>
+cd <YOUR_REPOSITORY_FOLDER>
+```
+
+Start the application:
 
 ```bash
 docker compose up --build
 ```
 
-- UI: http://localhost:5173
-- Backend API: http://localhost:8000/docs
-- Health: http://localhost:8000/api/health
+Open the application at:
 
-The initial January download can take time: Elexon data is requested as daily intervals and retained in process memory until refresh/restart. An upstream data fetch failure is displayed as an error, **never** replaced with fictional figures.
+**http://localhost:5173**
 
-Run tests without Docker (from the `backend/` directory):
+To stop the application:
 
 ```bash
-pip install -r requirements.txt
-pytest -q
+docker compose down
 ```
 
-## Files
+### Run Backend Tests
 
-```text
-backend/
-  app/main.py          FastAPI routes, CORS, memory cache
-  app/elexon.py        Elexon BMRS client and daily chunked retrieval
-  app/analytics.py     Temporal join, cutoff logic, metrics
-  tests/test_analytics.py  Unit tests for leakage, missing data, wind filtering
-  requirements.txt    Python dependencies
-  Dockerfile          Backend container
-frontend/
-  src/main.jsx        Dashboard, day/cutoff filters, charts, CSV export
-  src/style.css       Responsive dashboard design
-  index.html          HTML entry
-  vite.config.js      Development proxy
-  package.json        Node scripts and dependencies
-  Dockerfile          Frontend container
-docker-compose.yml    Run frontend + backend
-.gitignore            Local generated file exclusions
-README.md             Guide and design review
+```bash
+pip install -r backend/requirements.txt
+python -m pytest -q
 ```
 
-## Data contract
+## Data Sources and Methodology
 
-Only the specified source streams are used:
-- `GET /bmrs/api/v1/datasets/FUELHH/stream` — restrict to `fuelType = WIND`, `startTime`, `generation`.
-- `GET /bmrs/api/v1/datasets/WINDFOR/stream` — `startTime`, `publishTime`, `generation`.
+WindSight uses two Elexon datasets:
 
-Both are queried in one-day windows across **29 Dec 2025 – 2 Feb 2026** to include forecasts published prior to January delivery periods. Deliveries are filtered to **1–31 January 2026**. The stream endpoint's date-filter semantics and historical completeness must be validated against Elexon in the deployed environment before client sign-off. Production ingestion should also deduplicate by Elexon record identity and store immutable ingestion snapshots.
+- [FUELHH](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream) — Actual generation records filtered to `fuelType = WIND`.
+- [WINDFOR](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream) — Wind generation forecasts and publication timestamps.
 
-All source instants are parsed as UTC timestamps. The forecast cutoff for each *delivery date* is the previous calendar day at a configurable hour in `Europe/London` (default **12:00**); it is an **assumption**, not an asserted market-wide exchange gate closure. For each delivery `startTime`, select the forecast record having the highest `publishTime <= cutoff`. Never use a later forecast even if it predicts the same delivery half-hour. A published forecast may be missing for an interval; this is reported as missing, not zero.
+For each delivery period, the backend selects the latest forecast published before or at the selected decision cutoff and compares it with actual generation at the same timestamp.
 
-### Metrics
+Forecast errors are calculated using matched observations only.
 
-For matched half-hour periods only, error `e = forecast MW - actual MW`.
-- MAE = mean(|e|)
-- RMSE = sqrt(mean(e²))
-- Bias = mean(e), positive meaning wind overforecast / potential shortage
-- p90 absolute error = empirical 90th percentile of |e|
-- Coverage = matched periods / total expected delivery periods
-- MWh for each half-hour = MW × 0.5, summed separately for forecast and actual
+The retrieved forecast data is hourly, while actual generation is half-hourly. Therefore, exact timestamp matching produces approximately 50% coverage. Missing forecast values are not estimated.
 
-The p90 absolute error is **retrospective descriptive uncertainty**, not a statistically calibrated predictive interval. January is an in-sample descriptive retrospective; for predictive confidence or procurement recommendations, evaluate on separate dates and incorporate demand/positions/market costs (outside assignment scope).
+The default 12:00 UK decision cutoff is a configurable assumption for this pilot.
 
-## Design decisions and limitations
+## Project Links
 
-1. **No look-ahead leakage:** publishTime controls point-in-time eligibility.
-2. **Clearly distinct reliability and completeness:** missing data excluded from metrics and counted in coverage.
-3. **Request observability:** source and loaded timestamp visible; the UI exposes manual refresh and CSV export.
-4. **No fake live data:** API/network errors are exposed to the user.
-5. **Deliberately small MVP:** no database, authentication, background scheduler, demand feeds or price integrations.
-6. **Scalability path:** scheduled ingestion + persisted raw records (Postgres), retry/backoff, quality checks, forecast provenance, configurable cutoff by exchange gate, auth, monitoring, multi-month holdout evaluation.
+- **Live Application:** To be added after deployment
+- **GitHub Repository:** To be added
+- **Demo Video:** To be added (Unlisted YouTube)
 
-**Important unverified integration point:** The Elexon host was not reachable from the development sandbox, so the entire-month retrieval and stream query parameter behavior could not be end-to-end verified here. Test with live access; adjust API filtering according to Elexon's current docs if required. This is a working prototype, not a production-certified data pipeline.
+## AI Assistance
 
-## Hosting / deployment
+OpenAI ChatGPT/Codex was used to assist with code development, debugging, testing, and documentation.
 
-**Live deployment URL:** Not yet deployed (replace with a verified public URL after deploying). Neither a Vercel nor a Heroku deployment has been performed. The Python API must be reachable over HTTPS in addition to the React UI. When separately hosting the frontend and API, set `VITE_API_URL` at frontend *build time* and `CORS_ORIGINS` on the backend to the exact public frontend origin. Deploying only the React assets does **not** deploy the FastAPI API.
+## Notes
 
-## AI usage disclosure
-
-**AI tools used:** OpenAI ChatGPT was used to research the domain, propose the architecture, and generate initial React, Python, test, Docker and documentation code. All outputs require human review and external integration validation before operational use.
-
-## Source documentation
-
-- https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream
-- https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream
-- https://bmrs.elexon.co.uk/api-documentation/endpoint/forecast/generation/wind/latest/stream
+- The project focuses exclusively on January 2026 purchasing decisions, corresponding to delivery dates from 2 January to 1 February 2026.
+- Only the specified Elexon wind generation datasets are used.
+- WindSight supports procurement analysis but does not calculate actual electricity purchase quantities, since demand and existing supply information are outside the project scope.

@@ -1,42 +1,64 @@
 import asyncio
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
+from .analytics import DELIVERY_START, DELIVERY_END
 
 BASE = 'https://data.elexon.co.uk/bmrs/api/v1'
+
 
 class UpstreamError(RuntimeError):
     pass
 
-async def _get(client, dataset, start, end):
-    url=f'{BASE}/datasets/{dataset}/stream'
-    try:
-        response=await client.get(url,params={'from':start.isoformat().replace('+00:00','Z'),
-                                              'to':end.isoformat().replace('+00:00','Z')})
-        response.raise_for_status()
-        data=response.json()
-        if isinstance(data,dict): data=data.get('data',[])
-        if not isinstance(data,list): raise ValueError('Unexpected Elexon response')
-        return data
-    except (httpx.HTTPError,ValueError) as exc:
-        raise UpstreamError(f'Elexon {dataset} fetch failed: {exc}') from exc
+
+async def _get(client, dataset, params):
+    for attempt in range(3):
+        try:
+            response = await client.get(f'{BASE}/datasets/{dataset}/stream', params=params)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and 'data' in data:
+                data = data['data']
+            if not isinstance(data, list) or any(not isinstance(r, dict) for r in data):
+                raise ValueError('Unexpected response shape')
+            return data
+        except (httpx.HTTPError, ValueError) as exc:
+            retryable = isinstance(exc, httpx.TransportError) or (
+                isinstance(exc, httpx.HTTPStatusError) and (exc.response.status_code == 429 or exc.response.status_code >= 500)
+            )
+            if not retryable or attempt == 2:
+                raise UpstreamError(f'Elexon {dataset} could not be loaded. Please retry.') from exc
+            await asyncio.sleep(2 ** attempt)
+
 
 async def retrieve_month():
-    # Query in small chunks to avoid server query-size limits; wind forecast
-    # publication windows extend into Dec 2025 for Jan 1 deliveries.
-    start=datetime(2025,12,29,tzinfo=timezone.utc)
-    end=datetime(2026,2,2,tzinfo=timezone.utc)
-    windows=[]
-    cursor=start
-    while cursor<end:
-        nxt=min(cursor+timedelta(days=1),end)
-        windows.append((cursor,nxt));cursor=nxt
-    async with httpx.AsyncClient(timeout=35.0,follow_redirects=True,
-                                 limits=httpx.Limits(max_connections=5)) as client:
-        semaphore=asyncio.Semaphore(4)
-        async def guarded(dataset,s,e):
+    jobs = []
+    day = DELIVERY_START
+    while day <= DELIVERY_END:
+        jobs.append(('FUELHH', {'settlementDateFrom': day.isoformat(), 'settlementDateTo': day.isoformat(), 'fuelType': 'WIND'}))
+        day += timedelta(days=1)
+    cursor = datetime(2025, 12, 29, tzinfo=timezone.utc)
+    end = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    while cursor < end:
+        nxt = cursor + timedelta(days=1)
+        jobs.append(('WINDFOR', {'publishDateTimeFrom': cursor.isoformat(), 'publishDateTimeTo': nxt.isoformat()}))
+        cursor = nxt
+    async with httpx.AsyncClient(timeout=45, follow_redirects=True, limits=httpx.Limits(max_connections=4)) as client:
+        semaphore = asyncio.Semaphore(4)
+        async def load(dataset, params):
             async with semaphore:
-                return await _get(client,dataset,s,e)
-        actual_groups=await asyncio.gather(*(guarded('FUELHH',s,e) for s,e in windows))
-        forecast_groups=await asyncio.gather(*(guarded('WINDFOR',s,e) for s,e in windows))
-    return ([r for group in actual_groups for r in group],
-            [r for group in forecast_groups for r in group])
+                return dataset, await _get(client, dataset, params)
+        groups = await asyncio.gather(*(load(dataset, params) for dataset, params in jobs))
+    actuals, forecasts = [], []
+    actual_seen, forecast_seen = set(), set()
+    for dataset, rows in groups:
+        for row in rows:
+            if dataset == 'FUELHH' and row.get('fuelType') != 'WIND':
+                continue
+            fields = ['startTime', 'publishTime', 'generation'] + (['fuelType'] if dataset == 'FUELHH' else [])
+            reduced = {k: row[k] for k in fields if k in row}
+            key = tuple(str(reduced.get(k)) for k in fields)
+            seen = actual_seen if dataset == 'FUELHH' else forecast_seen
+            if key not in seen:
+                seen.add(key)
+                (actuals if dataset == 'FUELHH' else forecasts).append(reduced)
+    return actuals, forecasts
